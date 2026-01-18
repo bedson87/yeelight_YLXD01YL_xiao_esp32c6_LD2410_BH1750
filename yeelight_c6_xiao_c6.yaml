@@ -1,0 +1,486 @@
+# ==============================================
+# YEELIGHT YLXD01YL + ESP32-C6 + YLYK01YL REMOTE
+# ==============================================
+# Hardware: 
+# - Xiao ESP32-C6
+# - LD2410 presence sensor (3.3V)
+# - BH1750 light sensor
+# - External antenna via RF switch
+# - PWM LED control (warm/cold/nightlight)
+# - YLYK01YL BLE Remote (Yeelight Remote Control)
+# ==============================================
+
+substitutions:
+  device_name: komputerowy-yeelight-c6
+  friendly_name: "Komputerowy Yeelight Ceiling C6"
+  
+  # MAC address i bindkey pilota YLYK01YL
+  remote_mac: "11:22:33:44:55:DD"
+  remote_bindkey: "8620397d73c03276981db3b4"  # lowercase hex
+  
+  # Pin mapping dla Xiao ESP32-C6
+  pin_warm: D0           # GPIO0 - Warm white LED
+  pin_cold: D1           # GPIO1 - Cold white LED  
+  pin_nightlight: D2     # GPIO2 - Nightlight LED
+  
+  # I2C dla BH1750
+  pin_sda: D4            # GPIO4 (SDA) - I2C Data
+  pin_scl: D5            # GPIO5 (SCL) - I2C Clock
+  
+  # UART dla LD2410
+  pin_uart_tx: D6        # GPIO6 (TX) - UART TX
+  pin_uart_rx: D7        # GPIO7 (RX) - UART RX
+  
+  # RF Switch control
+  pin_rf_enable: GPIO3   # Enable RF switch
+  pin_ant_select: GPIO14 # Antenna select (LOW=internal, HIGH=external)
+
+# ==============================================
+# ESPHOME CORE CONFIG
+# ==============================================
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  
+  on_boot:
+    # Priority 800 - Configure RF switch
+    - priority: 800
+      then:
+        - logger.log: "📡 Configuring RF switch..."
+        - output.turn_on: rf_switch_enable
+        - output.turn_on: rf_antenna_select
+        - delay: 50ms
+        - logger.log: "✅ External antenna active"
+    
+    # Priority -10 - Normal startup
+    - priority: -10.0
+      then:
+        - logger.log:
+            format: "=== 🚀 YEELIGHT C6 + REMOTE START ==="
+            level: WARN
+        - wait_until:
+            condition:
+              api.connected:
+            timeout: 30s
+        - logger.log: "✅ API connected, BLE scanning for remote..."
+
+# ==============================================
+# ESP32-C6 CONFIGURATION
+# ==============================================
+esp32:
+  board: seeed_xiao_esp32c6
+  variant: ESP32C6
+  framework:
+    type: esp-idf
+
+# ==============================================
+# CONNECTIVITY
+# ==============================================
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  baud_rate: 115200
+  level: INFO
+
+api:
+  encryption:
+    key: "XXXXXXXXXXXX"
+
+ota:
+  - platform: esphome
+    password: "XXXXXXXXXXXX"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  output_power: 20dB
+
+# ==============================================
+# EXTERNAL COMPONENTS - DENTRA MIOT
+# ==============================================
+external_components:
+  - source: github://dentra/esphome-components
+    components: [ miot, miot_ylyk01yl, xiaomi_account ]
+
+# ==============================================
+# BLE TRACKER - REQUIRED FOR MIOT
+# ==============================================
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 150ms
+    window: 150ms
+    active: false
+
+
+# ==============================================
+# RF SWITCH OUTPUTS (External Antenna)
+# ==============================================
+output:
+  - platform: gpio
+    pin: ${pin_rf_enable}
+    id: rf_switch_enable
+    inverted: True
+    
+  - platform: gpio
+    pin: ${pin_ant_select}
+    id: rf_antenna_select
+
+# ==============================================
+# PWM LED OUTPUTS
+# ==============================================
+  # Warm white LED (2700K)
+  - platform: ledc
+    pin: ${pin_warm}
+    id: output_warm
+    frequency: 4882Hz
+    min_power: 0.07
+    max_power: 0.92
+    zero_means_zero: true
+    
+  # Cold white LED (6000K)
+  - platform: ledc
+    pin: ${pin_cold}
+    id: output_cold
+    frequency: 4882Hz
+    min_power: 0.07
+    max_power: 0.92
+    zero_means_zero: true
+    
+  # Nightlight LED
+  - platform: ledc
+    pin: ${pin_nightlight}
+    id: output_nightlight
+    frequency: 9765Hz
+    max_power: 0.92
+
+# ==============================================
+# LIGHT ENTITIES
+# ==============================================
+light:
+  # Main ceiling light
+  - platform: cwww
+    name: "${friendly_name}"
+    id: ceiling_light
+    cold_white: output_cold
+    warm_white: output_warm
+    cold_white_color_temperature: 6000 K
+    warm_white_color_temperature: 2700 K
+    gamma_correct: 0
+    constant_brightness: true
+    
+    on_turn_on:
+      - light.turn_off: night_light
+  
+  # Nightlight
+  - platform: monochromatic
+    name: "${friendly_name} Nightlight"
+    id: night_light
+    output: output_nightlight
+    gamma_correct: 0
+    
+    on_turn_on:
+      - light.turn_off: ceiling_light
+
+# ==============================================
+# UART FOR LD2410
+# ==============================================
+uart:
+  tx_pin: ${pin_uart_tx}
+  rx_pin: ${pin_uart_rx}
+  baud_rate: 256000
+  parity: NONE
+  stop_bits: 1
+
+# ==============================================
+# I2C FOR BH1750
+# ==============================================
+i2c:
+  - id: bus_a
+    sda: ${pin_sda}
+    scl: ${pin_scl}
+    scan: true
+    frequency: 400kHz
+
+# ==============================================
+# LD2410 PRESENCE SENSOR
+# ==============================================
+ld2410:
+
+# ==============================================
+# SENSORS
+# ==============================================
+sensor:
+  # BH1750 Light sensor
+  - platform: bh1750
+    i2c_id: bus_a
+    name: "${friendly_name} Illuminance"
+    address: 0x23
+    update_interval: 5s
+    unit_of_measurement: "lx"
+    accuracy_decimals: 1
+    device_class: "illuminance"
+
+  # LD2410 sensors
+  - platform: ld2410
+    light:
+      name: "${friendly_name} LD2410 Light"
+    moving_distance:
+      name: "${friendly_name} Moving Distance"
+    still_distance:
+      name: "${friendly_name} Still Distance"
+    moving_energy:
+      name: "${friendly_name} Move Energy"
+    still_energy:
+      name: "${friendly_name} Still Energy"
+    detection_distance:
+      name: "${friendly_name} Detection Distance"
+      
+    # Gate energy sensors (skrócone)
+    g0:
+      move_energy:
+        name: "${friendly_name} G0 Move Energy"
+      still_energy:
+        name: "${friendly_name} G0 Still Energy"
+  
+  # WiFi Signal Strength
+  - platform: wifi_signal
+    name: "${friendly_name} WiFi Signal"
+    update_interval: 60s
+    
+  # Uptime
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    update_interval: 60s
+
+  # ==============================================
+  # YLYK01YL REMOTE CONTROL - SENSOR PLATFORM
+  # ==============================================
+  # Zgodnie z dokumentacją dentra/miot_ylyk01yl
+  # Obsługuje przyciski: on, off, sun/dimmable, +/plus, M/moonlight, -/minus
+  # ==============================================
+  - platform: miot_ylyk01yl
+    mac_address: ${remote_mac}
+    bindkey: ${remote_bindkey}
+    
+    # on_click - krótkie kliknięcie przycisku
+    on_click:
+      # Przycisk ON - włącz główne światło
+      - button: "on"
+        then:
+          - logger.log: "🔵 Remote: Button ON clicked"
+          - light.turn_on:
+              id: ceiling_light
+              brightness: 80%
+              color_temperature: 4000 K
+      
+      # Przycisk OFF - wyłącz wszystkie światła
+      - button: "off"
+        then:
+          - logger.log: "🔴 Remote: Button OFF clicked"
+          - light.turn_off: ceiling_light
+          - light.turn_off: night_light
+      
+      # Przycisk SUN - ciepłe światło
+      - button: "sun"
+        then:
+          - logger.log: "☀️ Remote: Button SUN clicked"
+          - light.turn_on:
+              id: ceiling_light
+              brightness: 100%
+              color_temperature: 2700 K  # Warm white
+      
+      # Przycisk + (PLUS) - zwiększ jasność o 10%
+      - button: "+"
+        then:
+          - logger.log: "➕ Remote: Button + clicked"
+          - lambda: |-
+              if (id(ceiling_light).current_values.is_on()) {
+                auto call = id(ceiling_light).turn_on();
+                auto brightness = id(ceiling_light).current_values.get_brightness();
+                call.set_brightness(std::min(brightness + 0.1f, 1.0f));
+                call.perform();
+              } else if (id(night_light).current_values.is_on()) {
+                auto call = id(night_light).turn_on();
+                auto brightness = id(night_light).current_values.get_brightness();
+                call.set_brightness(std::min(brightness + 0.1f, 1.0f));
+                call.perform();
+              }
+      
+      # Przycisk M (MOON) - tryb nocny
+      - button: "M"
+        then:
+          - logger.log: "🌙 Remote: Button M clicked"
+          - if:
+              condition:
+                light.is_on: night_light
+              then:
+                # Jeśli nightlight włączony, przełącz na zimne światło
+                - light.turn_off: night_light
+                - light.turn_on:
+                    id: ceiling_light
+                    brightness: 80%
+                    color_temperature: 6000 K  # Cold white
+              else:
+                # Włącz nightlight
+                - light.turn_on:
+                    id: night_light
+                    brightness: 20%
+      
+      # Przycisk - (MINUS) - zmniejsz jasność o 10%
+      - button: "-"
+        then:
+          - logger.log: "➖ Remote: Button - clicked"
+          - lambda: |-
+              if (id(ceiling_light).current_values.is_on()) {
+                auto call = id(ceiling_light).turn_on();
+                auto brightness = id(ceiling_light).current_values.get_brightness();
+                call.set_brightness(std::max(brightness - 0.1f, 0.05f));
+                call.perform();
+              } else if (id(night_light).current_values.is_on()) {
+                auto call = id(night_light).turn_on();
+                auto brightness = id(night_light).current_values.get_brightness();
+                call.set_brightness(std::max(brightness - 0.1f, 0.05f));
+                call.perform();
+              }
+    
+    # on_long_press - długie przytrzymanie przycisku
+    on_long_press:
+      # + przytrzymane - jasność na max
+      - button: "+"
+        then:
+          - logger.log: "➕ Remote: Button + LONG PRESS"
+          - if:
+              condition:
+                light.is_on: ceiling_light
+              then:
+                - light.turn_on:
+                    id: ceiling_light
+                    brightness: 100%
+              else:
+                - light.turn_on:
+                    id: night_light
+                    brightness: 100%
+      
+      # - przytrzymane - jasność na min
+      - button: "-"
+        then:
+          - logger.log: "➖ Remote: Button - LONG PRESS"
+          - if:
+              condition:
+                light.is_on: ceiling_light
+              then:
+                - light.turn_on:
+                    id: ceiling_light
+                    brightness: 5%
+              else:
+                - light.turn_on:
+                    id: night_light
+                    brightness: 5%
+
+# ==============================================
+# BINARY SENSORS
+# ==============================================
+binary_sensor:
+  # LD2410 presence detection
+  - platform: ld2410
+    has_target:
+      name: "${friendly_name} Presence"
+    has_moving_target:
+      name: "${friendly_name} Moving Target"
+    has_still_target:
+      name: "${friendly_name} Still Target"
+    out_pin_presence_status:
+      name: "${friendly_name} Out Pin Presence"
+
+# ==============================================
+# SWITCHES
+# ==============================================
+switch:
+  # LD2410 controls
+  - platform: ld2410
+    engineering_mode:
+      name: "${friendly_name} Engineering Mode"
+    bluetooth:
+      name: "${friendly_name} Bluetooth"
+  
+  # Manual antenna switch
+  - platform: template
+    name: "${friendly_name} Use External Antenna"
+    id: antenna_switch
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - output.turn_on: rf_switch_enable
+      - output.turn_on: rf_antenna_select
+      - logger.log: "External u.FL antenna enabled"
+    turn_off_action:
+      - output.turn_on: rf_switch_enable
+      - output.turn_off: rf_antenna_select
+      - logger.log: "Internal ceramic antenna enabled"
+
+# ==============================================
+# NUMBER INPUTS (LD2410 Configuration)
+# ==============================================
+number:
+  - platform: ld2410
+    timeout:
+      name: "${friendly_name} Timeout"
+    light_threshold:
+      name: "${friendly_name} Light Threshold"
+    max_move_distance_gate:
+      name: "${friendly_name} Max Move Distance"
+    max_still_distance_gate:
+      name: "${friendly_name} Max Still Distance"
+
+# ==============================================
+# BUTTONS
+# ==============================================
+button:
+  # Device restart
+  - platform: restart
+    name: "${friendly_name} Restart"
+    device_class: "restart"
+    
+  # LD2410 controls
+  - platform: ld2410
+    factory_reset:
+      name: "${friendly_name} LD2410 Factory Reset"
+    restart:
+      name: "${friendly_name} LD2410 Restart"
+    query_params:
+      name: "${friendly_name} LD2410 Query Params"
+
+# ==============================================
+# TEXT SENSORS
+# ==============================================
+text_sensor:
+  # LD2410 info
+  - platform: ld2410
+    version:
+      name: "${friendly_name} LD2410 Firmware"
+    mac_address:
+      name: "${friendly_name} LD2410 MAC"
+  
+  # Device info
+  - platform: wifi_info
+    ip_address:
+      name: "${friendly_name} IP Address"
+    ssid:
+      name: "${friendly_name} SSID"
+    mac_address:
+      name: "${friendly_name} MAC Address"
+
+# ==============================================
+# SELECT INPUTS (LD2410)
+# ==============================================
+select:
+  - platform: ld2410
+    distance_resolution:
+      name: "${friendly_name} Distance Resolution"
+    baud_rate:
+      name: "${friendly_name} Baud Rate"
+    light_function:
+      name: "${friendly_name} Light Function"
+    out_pin_level:
+      name: "${friendly_name} Out Pin Level"
+# ==============================================
