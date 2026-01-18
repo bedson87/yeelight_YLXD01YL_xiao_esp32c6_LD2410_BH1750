@@ -16,7 +16,7 @@ It features native support for the encrypted **YLYK01YL BLE Remote**, advanced p
 ## 📸 The Internals
 
 Here is how the components (Xiao ESP32-C6, sensors, and antenna) are integrated inside the lamp housing:
-
+The ESP32C6 is wrapped in insulating tape. A capacitor has also been added to stabilize the 3.3V power supply.
 ![Project Internals](internals.jpg)
 
 ---
